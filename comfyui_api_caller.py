@@ -35,6 +35,13 @@ class ComfyUIAPIConfig:
                 "workflow_path": ("STRING", {
                     "default": "C:/path/to/workflow.json",
                     "multiline": False
+                }),
+                "timeout_seconds": ("INT", {
+                    "default": 300,
+                    "min": 10,
+                    "max": 3600,
+                    "step": 10,
+                    "display": "number"
                 })
             }
         }
@@ -44,11 +51,12 @@ class ComfyUIAPIConfig:
     FUNCTION = "create_config"
     CATEGORY = "API"
     
-    def create_config(self, api_url, workflow_path):
+    def create_config(self, api_url, workflow_path, timeout_seconds):
         """Create API configuration"""
         config = {
             "api_url": api_url,
             "workflow_path": workflow_path,
+            "timeout_seconds": timeout_seconds,
             "inputs": {},
             "executed": False,
             "outputs": None
@@ -353,45 +361,105 @@ class ComfyUIAPIBase:
                 "client_id": "comfyui_api_caller"
             }
             
-            response = requests.post(prompt_url, json=prompt_data)
+            print(f"Submitting workflow to {prompt_url}")
+            response = requests.post(prompt_url, json=prompt_data, timeout=30)
+            
             if response.status_code != 200:
-                print(f"Error submitting prompt: {response.text}")
-                return None
+                error_msg = f"Failed to submit workflow to API. Status: {response.status_code}"
+                try:
+                    error_detail = response.json()
+                    if "error" in error_detail:
+                        error_msg += f"\nAPI Error: {error_detail['error']}"
+                    if "node_errors" in error_detail:
+                        error_msg += f"\nNode Errors: {error_detail['node_errors']}"
+                except:
+                    error_msg += f"\nResponse: {response.text}"
+                
+                print(error_msg)
+                raise RuntimeError(error_msg)
             
             result = response.json()
             prompt_id = result.get("prompt_id")
             
             if not prompt_id:
-                print("No prompt_id received")
-                return None
+                error_msg = "No prompt_id received from API"
+                print(error_msg)
+                raise RuntimeError(error_msg)
             
-            # Wait for completion
+            print(f"Workflow submitted successfully. Prompt ID: {prompt_id}")
+            print(f"Waiting for completion (timeout: {api_config['timeout_seconds']} seconds)...")
+            
+            # Wait for completion with user-configured timeout
             history_url = f"{api_config['api_url']}/history/{prompt_id}"
+            timeout_seconds = api_config.get('timeout_seconds', 300)
+            check_interval = min(2, timeout_seconds / 10)  # Check every 2 seconds or 1/10 of timeout
+            max_attempts = int(timeout_seconds / check_interval)
             
-            for attempt in range(60):  # Wait up to 2 minutes
-                time.sleep(2)
-                response = requests.get(history_url)
+            for attempt in range(max_attempts):
+                time.sleep(check_interval)
                 
-                if response.status_code == 200:
-                    history = response.json()
-                    if prompt_id in history:
-                        status = history[prompt_id].get("status", {})
-                        if status.get("completed", False):
-                            outputs = history[prompt_id].get("outputs", {})
-                            # Cache the outputs
-                            api_config["outputs"] = outputs
-                            api_config["executed"] = True
-                            return outputs
-                        elif "error" in status:
-                            print(f"API execution error: {status['error']}")
-                            return None
+                try:
+                    response = requests.get(history_url, timeout=10)
+                    
+                    if response.status_code == 200:
+                        history = response.json()
+                        if prompt_id in history:
+                            status = history[prompt_id].get("status", {})
+                            
+                            # Check for completion
+                            if status.get("completed", False):
+                                outputs = history[prompt_id].get("outputs", {})
+                                print(f"Workflow completed successfully after {(attempt + 1) * check_interval:.1f} seconds")
+                                # Cache the outputs
+                                api_config["outputs"] = outputs
+                                api_config["executed"] = True
+                                return outputs
+                            
+                            # Check for errors
+                            elif "error" in status:
+                                error_detail = status["error"]
+                                error_msg = f"Workflow execution failed on remote ComfyUI:\n{error_detail}"
+                                
+                                # Try to get more detailed error information
+                                if "exception_type" in error_detail:
+                                    error_msg += f"\nException Type: {error_detail['exception_type']}"
+                                if "exception_message" in error_detail:
+                                    error_msg += f"\nException Message: {error_detail['exception_message']}"
+                                if "traceback" in error_detail:
+                                    error_msg += f"\nTraceback: {error_detail['traceback']}"
+                                if "node_id" in error_detail:
+                                    error_msg += f"\nFailed Node ID: {error_detail['node_id']}"
+                                if "node_type" in error_detail:
+                                    error_msg += f"\nFailed Node Type: {error_detail['node_type']}"
+                                
+                                print(error_msg)
+                                raise RuntimeError(error_msg)
+                            
+                            # Still executing, continue waiting
+                            else:
+                                elapsed_time = (attempt + 1) * check_interval
+                                if attempt % 10 == 0:  # Print progress every ~20 seconds
+                                    print(f"Still waiting... ({elapsed_time:.1f}/{timeout_seconds} seconds)")
+                    else:
+                        print(f"Warning: Failed to check workflow status (HTTP {response.status_code})")
+                        
+                except requests.RequestException as e:
+                    print(f"Warning: Network error while checking status: {e}")
+                    continue
             
-            print("Timeout waiting for workflow completion")
-            return None
+            # Timeout reached
+            error_msg = f"Workflow execution timed out after {timeout_seconds} seconds"
+            print(error_msg)
+            raise RuntimeError(error_msg)
             
+        except requests.RequestException as e:
+            error_msg = f"Network error when calling ComfyUI API: {e}"
+            print(error_msg)
+            raise RuntimeError(error_msg)
         except Exception as e:
-            print(f"Error calling ComfyUI API: {e}")
-            return None
+            error_msg = f"Unexpected error during API execution: {e}"
+            print(error_msg)
+            raise RuntimeError(error_msg)
 
 
 class ComfyUIAPIOutputImage(ComfyUIAPIBase):
