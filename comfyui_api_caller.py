@@ -107,10 +107,13 @@ class ComfyUIAPIInput:
                 return "latent"
         elif isinstance(input_data, dict) and "samples" in input_data:
             return "latent"
+        elif isinstance(input_data, (int, float)):
+            return "number"
         elif isinstance(input_data, str):
             return "text"
         else:
-            return "text"  # Default fallback
+            # Try to convert to string as fallback
+            return "text"
     
     def add_inputs(self, api_config, 
                    input_1=None, input_1_node_id=1,
@@ -141,6 +144,9 @@ class ComfyUIAPIInput:
                         "type": input_type,
                         "data": input_data
                     }
+                    print(f"Added input for node {node_id}: type={input_type}, data={input_data if input_type == 'number' else str(input_data)[:50]}")
+                else:
+                    print(f"Failed to detect type for input {node_id}: {type(input_data)}, value={input_data}")
         
         return (new_config,)
 
@@ -247,111 +253,161 @@ class ComfyUIAPIBase:
             return None
         
         # Update workflow with inputs
+        print(f"Updating workflow with {len(api_config['inputs'])} inputs")
         for node_id, input_info in api_config["inputs"].items():
             input_type = input_info["type"]
             input_data = input_info["data"]
             node_id_str = str(node_id)
             
-            if node_id_str in workflow and "inputs" in workflow[node_id_str]:
-                node_inputs = workflow[node_id_str]["inputs"]
+            print(f"Processing input for node {node_id}: type={input_type}")
+            
+            if node_id_str in workflow:
+                if "inputs" in workflow[node_id_str]:
+                    node_inputs = workflow[node_id_str]["inputs"]
+                    print(f"Node {node_id} found in workflow. Available inputs: {list(node_inputs.keys())}")
+                else:
+                    print(f"Node {node_id} found but has no 'inputs' field")
+                    continue
+            else:
+                print(f"Node {node_id} not found in workflow. Available nodes: {list(workflow.keys())[:10]}...")
+                continue
+            
+            if input_type == "text":
+                # Try common text input field names
+                text_fields = ["text", "prompt", "string", "positive", "negative"]
+                updated = False
+                for field_name in text_fields:
+                    if field_name in node_inputs:
+                        node_inputs[field_name] = str(input_data)
+                        updated = True
+                        print(f"Updated text field '{field_name}' in node {node_id} with: {str(input_data)[:50]}...")
+                        break
                 
-                if input_type == "text":
-                    if "text" in node_inputs:
-                        node_inputs["text"] = str(input_data)
-                    elif "prompt" in node_inputs:
-                        node_inputs["prompt"] = str(input_data)
-                elif input_type == "image":
-                    # Upload image first
-                    try:
-                        pil_image = self.tensor_to_pil(input_data)
-                        img_byte_arr = io.BytesIO()
-                        pil_image.save(img_byte_arr, format='PNG')
-                        img_byte_arr.seek(0)
-                        
-                        upload_url = f"{api_config['api_url']}/upload/image"
-                        files = {'image': ('input.png', img_byte_arr, 'image/png')}
-                        response = requests.post(upload_url, files=files)
-                        
-                        if response.status_code == 200:
-                            upload_result = response.json()
-                            filename = upload_result.get("name")
-                            if "image" in node_inputs:
-                                node_inputs["image"] = filename
-                    except Exception as e:
-                        print(f"Error uploading image for node {node_id}: {e}")
-                elif input_type == "latent":
-                    # For latent inputs, we'll save the latent to file and modify the workflow
-                    # to use LoadLatent node instead
-                    print(f"Processing latent input for node {node_id}")
+                if not updated:
+                    print(f"Warning: No recognized text field found in node {node_id}. Available fields: {list(node_inputs.keys())}")
+            
+            elif input_type == "number":
+                # Try common number input field names
+                number_fields = ["seed", "steps", "cfg", "width", "height", "batch_size", "denoise", 
+                               "strength", "value", "amount", "scale", "factor", "multiplier"]
+                updated = False
+                for field_name in number_fields:
+                    if field_name in node_inputs:
+                        if isinstance(input_data, int):
+                            node_inputs[field_name] = int(input_data)
+                        else:
+                            node_inputs[field_name] = float(input_data)
+                        updated = True
+                        print(f"Updated number field '{field_name}' in node {node_id} with: {input_data}")
+                        break
+                
+                if not updated:
+                    print(f"Warning: No recognized number field found in node {node_id}. Available fields: {list(node_inputs.keys())}")
+                    # As fallback, try to update the first field that looks like it accepts numbers
+                    for field_name, field_value in node_inputs.items():
+                        if isinstance(field_value, (int, float)):
+                            if isinstance(input_data, int):
+                                node_inputs[field_name] = int(input_data)
+                            else:
+                                node_inputs[field_name] = float(input_data)
+                            print(f"Updated fallback number field '{field_name}' in node {node_id} with: {input_data}")
+                            break
+            
+            elif input_type == "image":
+                # Upload image first
+                try:
+                    pil_image = self.tensor_to_pil(input_data)
+                    img_byte_arr = io.BytesIO()
+                    pil_image.save(img_byte_arr, format='PNG')
+                    img_byte_arr.seek(0)
                     
-                    try:
-                        # Save latent to a temporary file
-                        import tempfile
-                        import uuid
-                        latent_filename = f"api_transfer_{uuid.uuid4().hex}.latent"
+                    upload_url = f"{api_config['api_url']}/upload/image"
+                    files = {'image': ('input.png', img_byte_arr, 'image/png')}
+                    response = requests.post(upload_url, files=files)
+                    
+                    if response.status_code == 200:
+                        upload_result = response.json()
+                        filename = upload_result.get("name")
+                        if "image" in node_inputs:
+                            node_inputs["image"] = filename
+                        print(f"Updated image field in node {node_id} with filename: {filename}")
+                    else:
+                        print(f"Failed to upload image for node {node_id}: HTTP {response.status_code}")
+                except Exception as e:
+                    print(f"Error uploading image for node {node_id}: {e}")
+            
+            elif input_type == "latent":
+                # For latent inputs, we'll save the latent to file and modify the workflow
+                # to use LoadLatent node instead
+                print(f"Processing latent input for node {node_id}")
+                try:
+                    # Save latent to a temporary file
+                    import tempfile
+                    import uuid
+                    latent_filename = f"api_transfer_{uuid.uuid4().hex}.latent"
+                    
+                    # Use ComfyUI's latent saving mechanism
+                    latent_samples = input_data["samples"]
+                    output = {
+                        "latent_tensor": latent_samples.contiguous(),
+                        "latent_format_version_0": torch.tensor([])
+                    }
+                    
+                    # Save to temporary location first
+                    temp_file = os.path.join(tempfile.gettempdir(), latent_filename)
+                    import comfy.utils
+                    comfy.utils.save_torch_file(output, temp_file, metadata=None)
+                    
+                    print(f"Saved latent to temporary file: {temp_file}")
+                    print(f"Latent shape: {latent_samples.shape}")
+                    
+                    # Upload the latent file to target ComfyUI
+                    upload_url = f"{api_config['api_url']}/upload/image"  # ComfyUI uses same endpoint for all files
+                    
+                    with open(temp_file, 'rb') as f:
+                        files = {'image': (latent_filename, f, 'application/octet-stream')}
+                        response = requests.post(upload_url, files=files)
+                    
+                    if response.status_code == 200:
+                        upload_result = response.json()
+                        uploaded_filename = upload_result.get("name", latent_filename)
+                        print(f"Successfully uploaded latent file: {uploaded_filename}")
                         
-                        # Use ComfyUI's latent saving mechanism
-                        latent_samples = input_data["samples"]
-                        output = {
-                            "latent_tensor": latent_samples.contiguous(),
-                            "latent_format_version_0": torch.tensor([])
+                        # Modify workflow to inject a LoadLatent node
+                        load_latent_node_id = f"{node_id}_latent_loader"
+                        workflow[load_latent_node_id] = {
+                            "inputs": {
+                                "latent": uploaded_filename
+                            },
+                            "class_type": "LoadLatent",
+                            "_meta": {
+                                "title": f"Load Latent for Node {node_id}"
+                            }
                         }
                         
-                        # Save to temporary location first
-                        temp_file = os.path.join(tempfile.gettempdir(), latent_filename)
-                        import comfy.utils
-                        comfy.utils.save_torch_file(output, temp_file, metadata=None)
+                        # Update the original node to connect to the LoadLatent node
+                        if "inputs" in workflow.get(node_id_str, {}):
+                            for input_key in ["samples", "latent"]:
+                                if input_key in node_inputs:
+                                    # Connect to the LoadLatent node output
+                                    node_inputs[input_key] = [load_latent_node_id, 0]
+                                    break
                         
-                        print(f"Saved latent to temporary file: {temp_file}")
-                        print(f"Latent shape: {latent_samples.shape}")
+                        print(f"Modified workflow to load latent from {uploaded_filename}")
+                    else:
+                        print(f"Failed to upload latent file: {response.status_code}")
+                        print(f"Response: {response.text}")
+                    
+                    # Clean up temporary file
+                    try:
+                        os.remove(temp_file)
+                    except:
+                        pass
                         
-                        # Upload the latent file to target ComfyUI
-                        upload_url = f"{api_config['api_url']}/upload/image"  # ComfyUI uses same endpoint for all files
-                        
-                        with open(temp_file, 'rb') as f:
-                            files = {'image': (latent_filename, f, 'application/octet-stream')}
-                            response = requests.post(upload_url, files=files)
-                        
-                        if response.status_code == 200:
-                            upload_result = response.json()
-                            uploaded_filename = upload_result.get("name", latent_filename)
-                            print(f"Successfully uploaded latent file: {uploaded_filename}")
-                            
-                            # Modify workflow to inject a LoadLatent node
-                            load_latent_node_id = f"{node_id}_latent_loader"
-                            workflow[load_latent_node_id] = {
-                                "inputs": {
-                                    "latent": uploaded_filename
-                                },
-                                "class_type": "LoadLatent",
-                                "_meta": {
-                                    "title": f"Load Latent for Node {node_id}"
-                                }
-                            }
-                            
-                            # Update the original node to connect to the LoadLatent node
-                            if "inputs" in workflow.get(node_id_str, {}):
-                                for input_key in ["samples", "latent"]:
-                                    if input_key in node_inputs:
-                                        # Connect to the LoadLatent node output
-                                        node_inputs[input_key] = [load_latent_node_id, 0]
-                                        break
-                            
-                            print(f"Modified workflow to load latent from {uploaded_filename}")
-                        else:
-                            print(f"Failed to upload latent file: {response.status_code}")
-                            print(f"Response: {response.text}")
-                        
-                        # Clean up temporary file
-                        try:
-                            os.remove(temp_file)
-                        except:
-                            pass
-                            
-                    except Exception as e:
-                        print(f"Error processing latent input for node {node_id}: {e}")
-                        import traceback
-                        traceback.print_exc()
+                except Exception as e:
+                    print(f"Error processing latent input for node {node_id}: {e}")
+                    import traceback
+                    traceback.print_exc()
         
         # Execute workflow
         try:
