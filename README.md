@@ -41,9 +41,9 @@
 ### 工作流程
 
 ```
-Input Node → API Config → Output Node(s)
+API Config → Input Node → Output Node(s)
      ↓           ↓             ↓
-   [Data]   [Settings]   [Results]
+ [Settings]    [Data]      [Results]
 ```
 
 ### 安装
@@ -87,12 +87,12 @@ Input Node → API Config → Output Node(s)
 
 #### 图像处理
 ```
-LoadImage → API Input → API Config → API Output (Image) → PreviewImage
+LoadImage → API Config → API Input → API Output (Image) → PreviewImage
 ```
 
 #### 潜空间工作流
 ```  
-KSampler → API Input → API Config → API Output (Latent) → VAEDecode
+LoadImage → API Config → API Input → API Output (Latent) → KSampler 
 ```
 
 #### 多输出
@@ -161,9 +161,9 @@ A ComfyUI custom node plugin that enables calling external ComfyUI instances via
 ### Workflow
 
 ```
-Input Node → API Config → Output Node(s)
+API Config → Input Node → Output Node(s)
      ↓           ↓             ↓
-   [Data]   [Settings]   [Results]
+ [Settings]    [Data]      [Results]
 ```
 
 ### Installation
@@ -212,7 +212,7 @@ LoadImage → API Input → API Config → API Output (Image) → PreviewImage
 
 #### Latent Workflow
 ```  
-KSampler → API Input → API Config → API Output (Latent) → VAEDecode
+LoadImage → API Config → API Input → API Output (Latent) → KSampler 
 ```
 
 #### Multi-Output
