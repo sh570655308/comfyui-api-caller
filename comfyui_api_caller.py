@@ -273,18 +273,41 @@ class ComfyUIAPIBase:
                 continue
             
             if input_type == "text":
-                # Try common text input field names
-                text_fields = ["text", "prompt", "string", "positive", "negative"]
+                # Try common text input field names (case-sensitive)
+                text_fields = ["Text", "text", "prompt", "Prompt", "string", "String", 
+                              "positive", "negative", "value", "Value", "content", "Content"]
                 updated = False
+                
+                print(f"Attempting to update text field in node {node_id}")
+                print(f"Available input fields in node {node_id}: {list(node_inputs.keys())}")
+                print(f"Input data to set: '{str(input_data)}'")
+                
                 for field_name in text_fields:
                     if field_name in node_inputs:
+                        old_value = node_inputs[field_name]
                         node_inputs[field_name] = str(input_data)
                         updated = True
-                        print(f"Updated text field '{field_name}' in node {node_id} with: {str(input_data)[:50]}...")
+                        print(f"✓ Successfully updated field '{field_name}' in node {node_id}")
+                        print(f"  Old value: '{old_value}'")
+                        print(f"  New value: '{str(input_data)}'")
                         break
                 
                 if not updated:
-                    print(f"Warning: No recognized text field found in node {node_id}. Available fields: {list(node_inputs.keys())}")
+                    # If no standard field found, try to update any existing string field
+                    print(f"No standard text field found. Checking all fields...")
+                    for field_name, field_value in node_inputs.items():
+                        if isinstance(field_value, str):
+                            old_value = field_value
+                            node_inputs[field_name] = str(input_data)
+                            updated = True
+                            print(f"✓ Updated string field '{field_name}' in node {node_id} (fallback)")
+                            print(f"  Old value: '{old_value}'")
+                            print(f"  New value: '{str(input_data)}'")
+                            break
+                    
+                    if not updated:
+                        print(f"❌ ERROR: Could not find any text field to update in node {node_id}")
+                        print(f"Available fields and their types: {[(k, type(v).__name__, v) for k, v in node_inputs.items()]}")
             
             elif input_type == "number":
                 # Try common number input field names
@@ -409,6 +432,27 @@ class ComfyUIAPIBase:
                     import traceback
                     traceback.print_exc()
         
+        # Verify workflow updates before execution
+        print("\n=== WORKFLOW VERIFICATION ===")
+        for node_id, input_info in api_config["inputs"].items():
+            node_id_str = str(node_id)
+            if node_id_str in workflow and "inputs" in workflow[node_id_str]:
+                node_inputs = workflow[node_id_str]["inputs"]
+                if input_info["type"] == "text":
+                    # Find which field was actually updated
+                    expected_value = str(input_info["data"])
+                    found_match = False
+                    for field_name, field_value in node_inputs.items():
+                        if str(field_value) == expected_value:
+                            print(f"✓ Node {node_id}: Field '{field_name}' correctly set to '{expected_value}'")
+                            found_match = True
+                            break
+                    
+                    if not found_match:
+                        print(f"❌ WARNING: Node {node_id} may not have been updated correctly")
+                        print(f"   Expected: '{expected_value}'")
+                        print(f"   Current values: {node_inputs}")
+
         # Execute workflow
         try:
             prompt_url = f"{api_config['api_url']}/prompt"
